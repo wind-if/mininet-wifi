@@ -11,7 +11,6 @@ from fcntl import fcntl, F_GETFL, F_SETFL
 from os import O_NONBLOCK
 import os
 from functools import partial
-from wifi import phyInt
 # Command execution support
 
 def run( cmd ):
@@ -171,35 +170,34 @@ def makeIntfPair( intf1, intf2, addr1=None, addr2=None, node1=None, node2=None,
        raises Exception on failure"""
     if not runCmd:
         runCmd = quietRun if not node1 else node1.cmd
-        runCmd2 = quietRun if not node2 else node2.cmd
+        if (str(node2) != 'onlyOneDevice'):
+            runCmd2 = quietRun if not node2 else node2.cmd
     if deleteIntfs:
         # Delete any old interfaces with the same names
         runCmd( 'ip link del ' + intf1 )
         runCmd2( 'ip link del ' + intf2 )
-    # Create new pair
-    #pdb.set_trace()
-    netns = 1 if not node2 else node2.pid
+        
+    if (str(node2) != 'onlyOneDevice'):
+        # Create new pair
+        netns = 1 if not node2 else node2.pid
     
     node1=str(node1)
     node2=str(node2)
-   
+    
+    cmdOutput = ''
     if addr1 is None and addr2 is None:
         cmdOutput = runCmd( 'ip link add name %s '
                             'type veth peer name %s '
                             'netns %s' % ( intf1, intf2, netns ) )
     else:
         if 'sta' in node1 and 'ap' in node2:
-            cmdOutput = runCmd( 'iw phy phy%s '
-                               'set netns %s ' %
-                               (  phyInt.phy[str(node1)], netns ) )
+            pass
         elif 'sta' in node2 and 'ap' in node1:
-            cmdOutput = runCmd( 'iw phy phy%s '
-                               'set netns %s ' %
-                               (  phyInt.phy[str(node2)], netns ) )
-        elif 'stan' in node2 and 'sta' in node1:
-            cmdOutput = runCmd( 'iw phy phy%s '
-                               'set netns %s ' %
-                               (  phyInt.phy[str(node1)], netns ) )
+            pass
+        elif 'sta' in node2 and 'sta' in node1:
+            pass
+        elif 'sta' in node1 and 'onlyOneDevice' in node2:
+            pass
         else:
             cmdOutput = runCmd( 'ip link add name %s '
                                'address %s '
@@ -207,6 +205,7 @@ def makeIntfPair( intf1, intf2, addr1=None, addr2=None, node1=None, node2=None,
                                'address %s '
                                'netns %s' %
                                (  intf1, addr1, intf2, addr2, netns ) )
+    
     if cmdOutput:
         raise Exception( "Error creating interface pair (%s,%s): %s " %
                          ( intf1, intf2, cmdOutput ) )
@@ -232,8 +231,6 @@ def moveIntfNoRetry( intf, dstNode, printError=False ):
         printError: if true, print error"""
     if dstNode.name[:3]=="sta" or dstNode.name[:2]=="ap": 
         if dstNode.name[:3]=="sta":
-            cmd = 'iw phy phy%s set netns %s' % ( phyInt.phy[ str(dstNode.name) ], dstNode.pid )
-            cmdOutput = quietRun( cmd )
             return True    
     else:
         intf = str( intf )

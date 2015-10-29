@@ -69,12 +69,28 @@ class Intf( object ):
 
     def ifconfig( self, *args ):
         if('w' in str(self.name)):
-            wif = self.cmd("iwconfig 2>&1 | grep IEEE | awk '{print $1}'")
-            self.cmd('ip link set dev %s name %s-wlan%s' % (wif.strip(), self.node, station.nextWlan[str(self.node)]) )
-            return self.cmd( 'ifconfig %s-wlan%s'% (self.node, station.nextWlan[str(self.node)]), *args )
+            if str(args[0][:1])!='u':
+                iface = 0
+                station.ifconfig(str(self.node))
+            else:
+                try:
+                    if self.node in station.apIface:
+                        iface = self.node.nextIface
+                        self.node.nextIface+=1                        
+                    else:
+                        iface = station.addressingSta[str(self.node)]
+                except:
+                    if self.node not in station.apIface:
+                        self.node.nextIface=0
+                        iface = 0
+                        station.apIface.append(self.node)
+                    else:
+                        iface = station.ifconfig(str(self.node))
+            return self.cmd( 'ifconfig %s-wlan%s'% (self.node, iface), *args )
         else:
             "Configure ourselves using ifconfig"
             return self.cmd( 'ifconfig', self.name, *args )
+            
 
     def setIP( self, ipstr, prefixLen=None ):
         """Set our IP address"""
@@ -281,6 +297,7 @@ class TCIntf( Intf ):
                           'burst 20 ' +
                           'bandwidth %fmbit probability 1' % bw ]
                 parent = ' parent 6: '
+        
         return cmds, parent
 
     @staticmethod
@@ -320,7 +337,6 @@ class TCIntf( Intf ):
                 latency_ms=None, enable_ecn=False, enable_red=False,
                 max_queue_size=None, **params ):
         "Configure the port and set its properties."
-        #pdb.set_trace()
         result = Intf.config( self, **params)
 
         # Disable GRO
@@ -334,9 +350,11 @@ class TCIntf( Intf ):
             return
 
         # Clear existing configuration
+        cmds = []
         tcoutput = self.tc( '%s qdisc show dev %s' )
         if "priomap" not in tcoutput:
-            cmds = [ '%s qdisc del dev %s root' ]
+            if 'sta' not in str(self):
+                cmds = [ '%s qdisc del dev %s root' ]
         else:
             cmds = []
         # Bandwidth limits via various methods
@@ -414,22 +432,36 @@ class Link( object ):
             params1[ 'port' ] = port1
         if port2 is not None:
             params2[ 'port' ] = port2
+            
         if 'port' not in params1:
-            params1[ 'port' ] = node1.newPort()
+            if 'sta' in str(node1) and 'onlyOneDevice' in str(node2):
+                params1[ 'port' ] = node1.newWlanPort()
+                node1.newPort()
+            else:
+                params1[ 'port' ] = node1.newPort()
         if 'port' not in params2:
-            params2[ 'port' ] = node2.newPort()
-        
+            if 'sta' in str(node2) and 'onlyOneDevice' in str(node1):
+                params2[ 'port' ] = node2.newWlanPort()
+                node2.newPort()
+            else:
+                if (str(node2) != 'onlyOneDevice'):
+                    params2[ 'port' ] = node2.newPort()
+                else:
+                    params1[ 'port' ] = node1.newWlanPort()
+                
         if not intfName1:
-            if('sta' in str(node1) and 'ap' in str(node2) or 'sta' in str(node2) and 'ap' in str(node1) or 'sta' in str(node2) and 'sta' in str(node1)):
+            if('sta' in str(node2) and 'sta' in str(node1)):
                 intfName1 = self.wlanName( node1, params1[ 'port' ] )
             else:
                 intfName1 = self.intfName( node1, params1[ 'port' ] )
         if not intfName2:
-            if('sta' in str(node1) and 'ap' in str(node2) or 'sta' in str(node2) and 'ap' in str(node1) or 'sta' in str(node2) and 'sta' in str(node1)):
+            if('sta' in str(node2) and 'sta' in str(node1)):
                 intfName2 = self.wlanName( node2, params2[ 'port' ] )
             else:
-                intfName2 = self.intfName( node2, params2[ 'port' ] )
-            
+                if (str(node2) != 'onlyOneDevice'):
+                    intfName2 = self.intfName( node2, params2[ 'port' ] )
+                else:
+                    intfName1 = self.wlanName( node1, params1[ 'port' ] )
         self.fast = fast
         if('w' not in str(intfName1) and 'w' not in str(intfName2)):
             if fast:
@@ -439,31 +471,26 @@ class Link( object ):
                                    node1, node2, deleteIntfs=False )
             else:
                 self.makeIntfPair( intfName1, intfName2, addr1, addr2 )
-        
         if not cls1:
             cls1 = intf
         if not cls2:
             cls2 = intf
-
-        if(('sta' in str(node1) and 'ap' in str(node2)) or ('sta' in str(node2) and 'ap' in str(node1))):
-            if 'ap' in str(node2):
-                intf1 = cls1( name=intfName1, node=node1,
-                          link=self, mac=addr1, **params1  )
-                intf2 = None
-            elif 'ap' in str(node1):
-                intf1 = None
-                intf2 = cls2( name=intfName2, node=node2,
-                              link=self, mac=addr2, **params2 )
-        elif(('sta' in str(node1) and 'sta' in str(node2)) or ('sta' in str(node2) and 'sta' in str(node1))):
+        
+        if(('sta' in str(node1) and 'sta' in str(node2)) or ('sta' in str(node2) and 'sta' in str(node1))):
             intf1 = cls1( name=intfName1, node=node1,
                           link=self, mac=addr1, **params1  )
             intf2 = cls2( name=intfName2, node=node2,
                           link=self, mac=addr2, **params2 )
+        elif(('sta' in str(node1) and 'onlyOneDevice' in str(node2))):
+            intf1 = cls1( name=intfName1, node=node1,
+                          link=self, mac=addr1, **params1  )
+            intf2 = None
         else:
             intf1 = cls1( name=intfName1, node=node1,
                           link=self, mac=addr1, **params1  )
             intf2 = cls2( name=intfName2, node=node2,
                           link=self, mac=addr2, **params2 )
+        
         # All we are is dust in the wind, and our two interfaces
         self.intf1, self.intf2 = intf1, intf2
                

@@ -1,5 +1,5 @@
 """
-wifi setups for Mininet-WiFi.
+wifi setups to Mininet-WiFi.
 
 author: Ramon Fontes (ramonrf@dca.fee.unicamp.br)
 
@@ -12,6 +12,8 @@ import fcntl
 import fileinput
 import subprocess
 import glob
+import math
+import time
 
 import numpy as np
 import scipy.spatial.distance as distance 
@@ -22,12 +24,9 @@ from mininet.mobility import gauss_markov, \
     truncated_levy_walk, random_direction, random_waypoint, random_walk
 
 class checkNM ( object ):
-    """
-        add mac address inside of /etc/NetworkManager/NetworkManager.conf    
-    """
+    """ add mac address inside of /etc/NetworkManager/NetworkManager.conf """
     @classmethod 
-    def checkNetworkManager(self, storeMacAddress): 
-        self.storeMacAddress = storeMacAddress     
+    def checkNetworkManager(self, mac):
         self.printMac = False   
         unmatch = ""
         if(os.path.exists('/etc/NetworkManager/NetworkManager.conf')):
@@ -48,12 +47,10 @@ class checkNM ( object ):
                 unmatch = "#"
                 echo = "[keyfile]\nunmanaged-devices="
             
-            for n in range(len(self.storeMacAddress)): 
-                if self.storeMacAddress[n] not in unmatch:
-                    echo = echo + "mac:"
-                    echo = echo + self.storeMacAddress[n] + ";"
-                    self.printMac = True
-                
+            if mac not in unmatch:
+                echo = echo + "mac:" + mac + ';'
+                self.printMac = True
+            
             if(self.printMac):
                 for line in fileinput.input('/etc/NetworkManager/NetworkManager.conf', inplace=1): 
                     if(isNew):
@@ -66,42 +63,41 @@ class checkNM ( object ):
                             print line.replace(unmatch, echo)
                         else:
                             print line.rstrip()
+                #necessary to add mac address before starting the ap
+                time.sleep(1.5)
              
     @classmethod 
-    def getMacAddress(self, wlanInterface):
-        """
-            get Mac Address of any Interface   
-        """
-        self.wlanInterface = wlanInterface
-        self.storeMacAddress=[]
+    def getMacAddress(self, ap):
+        """ get Mac Address of any Interface """
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        info = fcntl.ioctl(s.fileno(), 0x8927,  struct.pack('256s', '%s'[:15]) % str(self.wlanInterface))
-        self.storeMacAddress.append(''.join(['%02x:' % ord(char) for char in info[18:24]])[:-1])
-        return self.storeMacAddress
+        info = fcntl.ioctl(s.fileno(), 0x8927,  struct.pack('256s', '%s'[:15]) % str(ap.virtualWlan))
+        mac = (''.join(['%02x:' % ord(char) for char in info[18:24]])[:-1])
+        self.checkNetworkManager(mac)
     
     @classmethod   
-    def APfile(self, apcommand, ap):
-        """
-            run an Access Point and create the file  
-        """
-        self.apcommand = apcommand + ("\' > %s.conf" % ap)  
-        os.system(self.apcommand)
-        self.cmd = ("hostapd -f apdebug.txt -B %s.conf" % ap)
-        os.system(self.cmd)
+    def APfile(self, cmd, ap):
+        """ run an Access Point and create the config file  """
+        apcommand = cmd + ("\' > %s.conf" % ap.virtualWlan)  
+        os.system(apcommand)
+        cmd = ("hostapd -B %s.conf" % ap.virtualWlan)
+        subprocess.check_output(cmd, shell=True)
+        #os.system(cmd)
 
 class getWlan( object ):
     
     @classmethod    
     def physical(self):
         self.phyInterfaces = []        
-        self.phyInterfaces = (subprocess.check_output("iwconfig 2>&1 | grep IEEE | awk '{print $1}'",shell=True)).split('\n')
+        self.phyInterfaces = (subprocess.check_output("iwconfig 2>&1 | grep IEEE | awk '{print $1}'",
+                                                      shell=True)).split('\n')
         self.phyInterfaces.pop()
         return self.phyInterfaces
     
     @classmethod    
     def virtual(self):
         self.newapif=[]
-        self.apif = subprocess.check_output("iwconfig 2>&1 | grep IEEE | awk '{print $1}'",shell=True).split('\n')
+        self.apif = subprocess.check_output("iwconfig 2>&1 | grep IEEE | awk '{print $1}'",
+                                            shell=True).split('\n')
         for apif in self.apif:
             if apif not in module.physicalWlan and apif!="":
                 self.newapif.append(apif)
@@ -110,283 +106,330 @@ class getWlan( object ):
         return self.newapif
 
 class module( object ):
-    """
-        Starts and Stop the module   
-    """            
+    """ Starts and Stop the module """            
     wifiRadios = 0
     isWiFi = False
     physicalWlan = []
+    virtualWlan = []
     isCode = False
-    #thread = multiprocessing.Process()
         
     @classmethod    
     def _start_module(self, wifiRadios):
-        """
-             Start wireless Module 
-        """
+        """ Start wireless Module """
         os.system( 'modprobe mac80211_hwsim radios=%s' % wifiRadios )
      
     @classmethod
     def _stop_module(self):
-        """
-            Stop wireless Module 
-        """   
+        """ Stop wireless Module """   
         if glob.glob("*.conf"):
             os.system( 'rm *.conf' )
         
         if glob.glob("*.txt"):
             os.system( 'rm *.txt' )
        
-        #self.thread.terminate()
         os.system( 'rmmod mac80211_hwsim' )
-        os.system( 'killall -9 hostapd' )
+        if accessPoint.exists:
+            os.system( 'killall -9 hostapd' )
         
+    @classmethod
+    def startEnvironment(self):
+        self.physicalWlan = getWlan.physical()  #Get Phisical Wlan(s)
+        self.isWiFi=True
+        self._start_module(module.wifiRadios) #Initatilize WiFi Module
+        phyInt.totalPhy = phyInt.getPhy() #Get Phy Interfaces                    
         
 class association( object ):
     
-    ssid = {}
-    
     @classmethod    
-    def setAdhocParameters(self, host, mode, **params):
-        """
-            Set wifi AdHoc Parameters. Have to use models for loss, latency, bw...    
-        """
-        self.mode = mode
+    def setAdhocParameters(self, sta, iface):
+        """ Set wifi AdHoc Parameters. Have to use models for loss, latency, bw... """
         latency = 10
-        self.host = host
         #delay = 5 * distance
-        try:
-            options = dict( params )
-            self.interface = options[ 'interface' ]
-        except:            
-            self.interface = 'wlan0'
-        
-        bandwidth = wifiParameters.set_bw(mode)
-        #self.host.cmd(host, "tc qdisc replace dev %s-%s root netem rate %.2fmbit latency %.2fms delay %.2fms" % (host, self.interface, rate, latency, delay)) 
-        self.host.cmd("tc qdisc add dev %s-%s root tbf rate %smbit latency %sms burst 1540" % (str(host), self.interface, bandwidth, latency)) 
+        bandwidth = wifiParameters.set_bw(sta.mode)
+        sta.pexec("tc qdisc replace dev %s-wlan%s \
+            root handle 3: netem rate %smbit \
+            latency %sms" % (sta, iface, bandwidth, latency))    
+        #Reordering packets    
+        sta.pexec('tc qdisc add dev %s-wlan%s parent 3:1 pfifo limit 1000' % (sta, iface))        
 
-    
+
     @classmethod    
-    def setInfraParameters(self, sta, mode, distance):
-        """
-            Set wifi Infrastrucure Parameters. Have to use models for loss, latency, bw...    
-        """
-        station.mode(str(sta), mode)
-            
+    def parameters(self, sta, ap, distance, wlan):
+        """ Wifi Parameters """
         seconds = 3
-        self.src = str(sta)
         try:
             """Based on RandomPropagationDelayModel (ns3)"""
-            seconds = abs(mobility.speed[self.src])
+            seconds = abs(sta.speed)
         except:
             pass
-        self.host = sta
+        
         latency = wifiParameters.latency(distance)
-        loss = wifiParameters.loss(distance)
+        loss = wifiParameters.loss(distance, sta.mode)
         delay = wifiParameters.delay(distance, seconds)
-        bw = wifiParameters.bw(distance, mode)  
-        self.host.pexec("tc qdisc replace dev %s-wlan0 root netem rate %.2fmbit loss %.1f%% latency %.2fms delay %.2fms" % (sta, bw, loss, latency, delay)) 
-        #os.system('util/m %s tc qdisc replace dev %s-wlan0 root netem rate %.2fmbit latency %.2fms delay %.2fms' % (self.host, self.host, bandwidth, latency, delay))
-        #self.host.cmd("tc qdisc replace dev %s-wlan0 root tbf rate %.2fmbit latency %.2fms burst 15k" % (self.host, rate, latency)) 
-        associate = self.doAssociation(mode, distance)
-        if associate == False:
-            mobility.handover(self.host)
+        bw = wifiParameters.bw(distance, sta.mode)  
+        
+        sta.pexec("tc qdisc replace dev %s-wlan%s \
+            root handle 1: netem rate %.2fmbit \
+            loss %.1f%% \
+            latency %.2fms \
+            delay %.2fms" % (sta, wlan, bw, loss, latency, delay))    
+        #Reordering packets    
+        sta.pexec('tc qdisc replace dev %s-wlan%s parent 1:1 pfifo limit 1000' % (sta, wlan))
+        #sta.pexec('tc qdisc del dev %s-wlan%s root' % (sta, wlan))
+        
+        if str(ap) == sta.ifaceAssociatedToAp[wlan]:
+            associated = self.doAssociation(sta.mode, distance) 
+        else:
+            aps = 0
+            for n in range(0,len(sta.ifaceAssociatedToAp)):
+                if 'ap' in sta.ifaceAssociatedToAp[n]:
+                    aps+=1
+            if len(sta.ifaceAssociatedToAp) == aps:
+                associated = True
+            else:
+                associated = False
+        
+        #Only if is a mobility topology
+        if mobility.ismobility == True: 
+            changeAP = False
+            mobilityReason = dict ()      
+            
+            """useful to llf (Least-loaded-first)"""
+            if mobility.leastLoadFirst == True:
+                llf = False
+                for apref in accessPoint.list:
+                    if str(apref) == sta.ifaceAssociatedToAp[wlan]:
+                        accessPoint.numberOfAssociatedStations(apref)
+                        ref_llf = apref.nAssociatedStations
+                        llf = True
+            
+                if llf == True:
+                    accessPoint.numberOfAssociatedStations(ap)
+                    if ap.nAssociatedStations+2 < ref_llf:
+                        mobilityReason.setdefault( 'reason', 'llf' )
+                        changeAP = True
+            
+            """useful to ssf (Strongest-signal-first)"""
+            if accessPoint.manual_apRange!=-10:
+                for apref in accessPoint.list:
+                    if str(apref) == sta.ifaceAssociatedToAp[wlan]:
+                        ref_Distance = mobility.getDistance(sta,apref)
+                        if ref_Distance > accessPoint.manual_apRange:
+                            changeAP = True
+                if distance <= accessPoint.manual_apRange and changeAP == True: 
+                    mobilityReason.setdefault( 'reason', 'ssf' )
+                    changeAP = True
+                else:
+                    changeAP = False
+                    
+            #Go to handover    
+            if associated == False or changeAP == True:
+                mobility.handover(sta, ap, wlan, distance, changeAP, **mobilityReason)
+                
+                    
+    @classmethod    
+    def setInfraParameters(self, sta, ap, distance, wlan):
+        """ Set wifi Infrastrucure Parameters. Have to use models for loss, latency, bw.."""
+        if wlan != '':
+            self.parameters(sta, ap, distance, wlan)
+        else:
+            for wlan in range(0, sta.nWlans):
+                self.parameters(sta, ap, distance, wlan)
             
     @classmethod    
     def doAssociation(self, mode, distance):
-        """
-            Associate/Disassociate according the distance   
-        """
+        """ Associate/Disassociate according the distance """
         associate = True
-        
-        if (mode=='a' and distance > 33):
+        if (distance > wifiParameters.get_range(mode)):
             associate = False
-        elif(mode=='b' and distance > 50):
-            associate = False
-        elif(mode=='g' and distance > 33):
-            associate = False
-        elif(mode=='n' and distance > 70):
-            associate = False
-        elif(mode=='ac' and distance > 100):
-            associate = False 
-            
         return associate
             
-
 class phyInt ( object ):
     
     phy = {}
-    nextIface = 0
     totalPhy = []
     
-    @classmethod 
-    def setNextIface(self):
-        """
-            Go to next Interface
-        """   
-        self.nextIface+=1
-         
     @classmethod
     def getPhy(self):
-        """
-            Get phy
-        """ 
+        """ Get phy """ 
         phy = subprocess.check_output("find /sys/kernel/debug/ieee80211 -name hwsim | cut -d/ -f 6 | sort", 
                                                              shell=True).split("\n")
         phy.pop()
         return phy
-     
-    @classmethod
-    def phyInt(self):
-        """
-            get Wireless Interface
-        """   
-        return subprocess.check_output("iwconfig 2>&1 | grep IEEE | awk '{print $1}'", shell=True).split("\n")
-    
         
 class station ( object ):
     
-    nextWlan = {}   
-    staMode = {}
-    doAssociation = {}
-    staPhy = []
-    nextIface = 0
-    currentPhy = 0
-    associatedAP = {}
+    addressingSta = {}
+    indexStaIface = {}
+    fixedPosition = []
+    apIface = []
+    printCon = True
     
     @classmethod    
-    def confirmAdhocAssociation(self, host, interface, ssid):
-        associated = ''
-        self.host = host
-        while(associated == '' or len(associated) == 0):
-            self.host.sendCmd("iw dev %s scan ssid | grep %s" % (interface, ssid))
-            associated = self.host.waitOutput()
-        wifiParameters.frequency(self.host, interface)
-        wifiParameters.tx_power(self.host, interface)
-    
-    @classmethod    
-    def confirmInfraAssociation(self, host):
-        associated = ''
-        self.host = host
-        while(associated == '' or len(associated) == 16):
-            self.host.sendCmd("iw dev %s-wlan0 link" % str(host))
-            associated = self.host.waitOutput()
-        wifiParameters.frequency(self.host, str(host)+'-wlan0')
-        wifiParameters.tx_power(self.host, str(host)+'-wlan0')
-            
-    @classmethod    
-    def mode(self, sta, mode):
-        self.staMode[sta] = mode
-    
-    @classmethod    
-    def associate(self, sta, ssid):
-        """
-            Station Associate to an Access Point
-        """   
-        self.host = sta
-        self.host.cmd("iw dev %s-wlan0 connect %s" % (sta, ssid))
-        self.confirmInfraAssociation(self.host)
-          
-    @classmethod    
-    def adhoc(self, host, ssid, mode, **params):
-        """
-            Adhoc mode
-        """   
-        self.ssid = ssid
-        self.mode = mode
-        self.host = host
-        hasIface = False   
-        try:
-            options = dict( params )
-            self.interface = options[ 'interface' ]
-            hasIface = True
+    def ifconfig(self, sta):
+        try: 
+            self.addressingSta[sta]+=1
         except:
-            hasIface = False
-        
-        if hasIface: # if new iface
-            association.setAdhocParameters(self.host, mode, **params)
-            self.host.cmd("iw dev %s-%s set type ibss" % (str(host), self.interface))
-            self.host.cmd("iw dev %s-%s ibss join %s 2412" % (str(host), self.interface, self.ssid))
-            print "associating %s ..." % str(host)
-            interface = '%s-%s' % (str(host), self.interface)
-            self.confirmAdhocAssociation(self.host, interface, self.ssid)
-        else: # if not
-            association.setAdhocParameters(self.host, mode, **params)
-            self.host.cmd("iw dev %s-wlan0 set type ibss" % str(host))
-            self.host.cmd("iw dev %s-wlan0 ibss join %s 2412" % (str(host), self.ssid))
-            print "associating %s ..." % str(host)
-            interface = '%s-wlan0' % str(host)
-            self.confirmAdhocAssociation(self.host, interface, self.ssid)
-            
-    @classmethod    
-    def addWlan(self, station):
-        """
-            Add phy Interface to Stations
-        """ 
-        phyInt.phy[station] = phyInt.totalPhy[self.currentPhy][3:]
-        os.system("iw phy phy%s set netns %s" % (phyInt.phy[station], station.pid)) 
-        wif = station.cmd("iwconfig 2>&1 | grep IEEE | awk '{print $1}'").split("\n")
-        wif.pop()
-        for iface in wif:
-            if iface[:4]=="wlan":
-                try:
-                    self.nextWlan[str(station)] += 1
-                except:
-                    self.nextWlan[str(station)] = 0
-                netxWlan = self.nextWlan[str(station)] 
-                self.renameIface(station, netxWlan, iface)
-        self.currentPhy+=1
+            self.addressingSta[sta] = 0
+        return self.addressingSta[sta]  
+     
+    @classmethod   
+    def setMac(self, sta):
+        sta.cmd('ip link set %s-wlan0 down' % sta)
+        sta.cmd('ip link set %s-wlan0 address %s' % (sta, sta.mac))
+        sta.cmd('ip link set %s-wlan0 up' % sta) 
      
     @classmethod    
-    def renameIface(self, station, nextWlan, iface):
-        """
-            Rename wireless interface if necessary
-        """
-        iface = iface[:-1]
-        station.cmd('ip link set dev %s name %s-wlan%s' % (iface, station, nextWlan))
-        station.cmd('ifconfig %s-wlan%s up' % (station, nextWlan))    
-                        
+    def assingIface(self, stations):
+        wlan = getWlan.virtual()
+        for sta in stations:
+            if 'sta' in str(sta):
+                for i in range(0, sta.nWlans):
+                    vwlan = module.virtualWlan.index(str(sta))
+                    os.system('iw phy %s set netns %s' % ( phyInt.totalPhy[vwlan + i], sta.pid ))
+                    sta.cmd('ip link set dev %s name %s-wlan%s' % (wlan[vwlan + i], str(sta), i))   
+      
+    @classmethod
+    def getWiFiParameters(self, sta, interface):
+        wifiParameters.get_frequency(sta, interface)
+        wifiParameters.get_tx_power(sta, interface)    
+        wifiParameters.get_rsi(sta, interface)  
+        
+    @classmethod    
+    def confirmMeshAssociation(self, sta, interface, mpID):
+        associated = ''
+        while(associated == '' or len(associated) == 11):
+            cmd = 'ifconfig mp%s | grep -o \'TX b.*\' | cut -f2- -d\':\'' % mpID
+            sta.sendCmd(cmd)
+            associated = sta.waitOutput()
+        self.getWiFiParameters(sta, interface)   
+    
+    @classmethod    
+    def confirmAdhocAssociation(self, sta, interface):
+        associated = ''
+        while(associated == '' or len(associated) == 0):
+            sta.sendCmd("iw dev %s scan ssid | grep %s" % (interface, sta.ssid))
+            associated = sta.waitOutput()
+        self.getWiFiParameters(sta, interface) 
+    
+    @classmethod    
+    def confirmInfraAssociation(self, sta, wlan, ap):
+        associated = ''
+        if self.printCon:
+            print "Associating %s to %s" % (sta, ap)
+        while(associated == '' or len(associated[0]) == 15):
+            associated = self.isAssociated(sta, wlan)
+        interface = str(sta)+'-wlan%s' % wlan
+        self.getWiFiParameters(sta, interface)   
+            
+    @classmethod    
+    def isAssociated(self, sta, iface):
+        associated = sta.pexec("iw dev %s-wlan%s link" % (sta, iface))
+        return associated
+            
+    @classmethod    
+    def associate(self, sta, ap):
+        """ Associate to an Access Point """ 
+        wlan = sta.ifaceToAssociate
+        self.cmd_associate(sta, wlan, ap)        
+        
+    @classmethod    
+    def cmd_associate(self, sta, wlan, ap):
+        sta.associatedAp = ap
+        sta.cmd("iw dev %s-wlan%s connect %s" % (sta, wlan, ap.ssid))
+        self.confirmInfraAssociation(sta, wlan, ap)
+        sta.ifaceAssociatedToAp[wlan] = str(ap) 
+        
+    @classmethod    
+    def adhoc(self, sta, **params):
+        """ Adhoc mode """   
+        sta.ifaceToAssociate += 1
+        iface = sta.ifaceToAssociate
+        association.setAdhocParameters(sta, iface)
+        sta.cmd("iw dev %s-wlan%s set type ibss" % (sta, iface))
+        sta.cmd("iw dev %s-wlan%s ibss join %s 2412" % (sta, iface, sta.ssid))
+        print "associating %s ..." % str(sta)
+        interface = '%s-wlan%s' % (str(sta), iface)
+        self.confirmAdhocAssociation(sta, interface)
+        
+    @classmethod    
+    def addMesh(self, sta, wlan=None, ipaddress=None, **params):
+        """ Mesh mode """   
+        sta.ifaceToAssociate += 1
+        iface = sta.ifaceToAssociate
+        sta.cmd('iw dev %s-wlan%s interface add mp%s type mp' % (str(sta), iface, iface))
+        sta.cmd('iw dev mp%s set %s' % (iface, sta.channel))
+        sta.cmd('ifconfig mp%s 192.168.10.%s up' % (iface, ipaddress))
+        sta.cmd('iw dev mp%s mesh join %s' % (iface, sta.ssid))
+        association.setAdhocParameters(sta, iface)
+        print "associating %s ..." % sta
+        interface = '%s-wlan%s' % (sta, iface)
+        mpID = iface
+        self.confirmMeshAssociation(sta, interface, mpID)        
             
 class accessPoint ( object ):    
 
-    apChannel = {}
-    apMode = {}
-    apName = []
-    apSSID = {}
-    apPhy = []
+    list = []
     number = 0
+    exists = False   
+    manual_apRange = -10   
+    
+    """
+    def wds(self, ap1, int1, ap2, int2):
+        os.system('iw dev %s set 4addr off' % int1)
+        os.system('iw dev %s interface add wds.%s type managed 4addr on' % (int1, int1))
+        os.system('iw dev %s set 4addr off' % int2)
+        os.system('iw dev %s interface add wds.%s type managed 4addr on' % (int2, int2))
+        os.system('ifconfig wds.%s down' % int1)
+        os.system('ifconfig wds.%s down' % int2)
+        os.system('ip link set dev wds.wlan2 addr 02:00:00:00:00:00')
+        os.system('ip link set dev wds.wlan1 addr 02:00:00:00:01:00')
+        os.system('ifconfig wds.%s up' % int1)
+        os.system('ifconfig wds.%s up' % int2)
+    """
     
     @classmethod
-    def start(self, bs, nextIface, ssid, mode, channel, 
-              country_code, auth_algs, wpa, wpa_key_mgmt, rsn_pairwise, wpa_passphrase):
-        """
-            Starts an Access Point
-        """
-        self.apName.append(bs)
-        self.apSSID[str(bs)] = ssid
-        self.apMode[str(bs)] = mode
+    def rename( self, intf, newname ):
+        "Rename interface"
+        os.system('ifconfig %s down' % intf)
+        os.system('ip link set %s name %s' % (intf, newname))
+        os.system('ifconfig %s up' % newname)
+        return newname
+    
+    @classmethod
+    def numberOfAssociatedStations( self, ap ):
+        "Number of Associated Stations"
+        cmd = 'iw dev %s-wlan0 station dump | grep Sta | grep -c ^' % ap     
+        proc = subprocess.Popen(cmd,stdout=subprocess.PIPE,shell=True)   
+        (out, err) = proc.communicate()
+        output = out.rstrip('\n')
+        ap.nAssociatedStations = int(output)
+    
+    @classmethod
+    def start(self, ap, country_code=None, auth_algs=None, wpa=None, 
+              wpa_key_mgmt=None, rsn_pairwise=None, wpa_passphrase=None, **params):
+        """ Starts an Access Point """
+        self.exists = True
         self.cmd = ("echo \'")
         """General Configurations"""             
-        self.cmd = self.cmd + ("interface=%s" % nextIface) # the interface used by the AP
+        self.cmd = self.cmd + ("interface=%s" % ap.virtualWlan) # the interface used by the AP
         """Not using at the moment"""
         self.cmd = self.cmd + ("\ndriver=nl80211")
-        if(ssid!=None):
-            self.cmd = self.cmd + ("\nssid=%s" % ssid) # the name of the AP
-        if(mode=="g" or mode=="n"):
+        self.cmd = self.cmd + ("\nssid=%s" % ap.ssid) # the name of the AP
+        
+        if ap.mode == 'n' or ap.mode == 'ac'or ap.mode == 'a':
             self.cmd = self.cmd + ("\nhw_mode=g") 
-        elif (mode=="b"):
-            self.cmd = self.cmd + ("\nhw_mode=b") 
-        elif (mode=="a"):
-            self.cmd = self.cmd + ("\nhw_mode=a")
-        if(channel!=None):
-            self.cmd = self.cmd + ("\nchannel=%s" % channel) # the channel to use 
-        if(mode=="ac"):
-            self.cmd = self.cmd + ("\nwme_enabled=1") 
-            self.cmd = self.cmd + ("\nieee80211ac=1")
+        else:
+            self.cmd = self.cmd + ("\nhw_mode=%s" % ap.mode) 
+        self.cmd = self.cmd + ("\nchannel=%s" % ap.channel) # the channel to use 
+        #if(ap.mode=="ac" or ap.mode=='a'):
+         #   self.cmd = self.cmd + ("\nieee80211ac=1")
         self.cmd = self.cmd + ("\nwme_enabled=1") 
-        self.cmd = self.cmd + ("\nieee80211n=1")
-        if(mode=="n"):
-            self.cmd = self.cmd + ("\nht_capab=[HT40+][SHORT-GI-40][DSSS_CCK-40]")
+        self.cmd = self.cmd + ("\nwmm_enabled=1") 
+        #if(ap.mode=="n" or ap.mode=="a"):
+         #   self.cmd = self.cmd + ("\nieee80211n=1")
+        #if(ap.mode=="n"):
+         #   self.cmd = self.cmd + ("\nht_capab=[HT40+][SHORT-GI-40][DSSS_CCK-40]")
         
         #Not used yet!
         if(country_code!=None):
@@ -421,42 +464,42 @@ class accessPoint ( object ):
         #    if(self.wpa_passphrase!=None):
         #        self.cmd = self.cmd + ("\nwpa_passphrase=%s" % self.wpa_passphrase)  
         #    self.countAP = len(self.baseStationName)
-        #    self.apcommand = ""
+        #    self.apcommand = ""        
         return self.cmd
         
     @classmethod
     def apBridge(self, ap, iface):
-        """
-            AP Bridge
-        """  
-        os.system("ovs-vsctl add-port %s %s" % (ap, iface))
+        """ AP Bridge """  
+        intf = str(ap)+'-'+str(iface[:4])+str(0)
+        os.system("ovs-vsctl add-port %s %s" % (ap, intf))
         
     @classmethod
-    def setBw(self, newapif, mode):
-        """
-            Set bw to AP 
-        """  
-        self.newapif = newapif
-        bandwidth = wifiParameters.set_bw(mode)
-        os.system("tc qdisc add dev %s root tbf rate %smbit latency 2ms burst 15k" % (self.newapif, bandwidth))   
+    def setBw(self, ap):
+        """ Set bw to AP """  
+        bandwidth = wifiParameters.set_bw(ap.mode)
+        
+        os.system("tc qdisc replace dev %s \
+            root handle 2: netem rate %.2fmbit \
+            latency 2ms \
+            delay 1ms" % (ap.virtualWlan, bandwidth))    
+        #Reordering packets    
+        os.system('tc qdisc add dev %s parent 2:1 pfifo limit 1000' % (ap.virtualWlan))
+        #os.system("tc qdisc add dev %s root tbf rate %smbit latency 2ms burst 15k" % \
+                 #(ap.virtualWlan, bandwidth))
         
 class mobility ( object ):    
-    """
-        Mobility 
-    """          
-    speed = {}
-    nodePosition = {}      
-    nodesPlotted = []
-    plotGraph = False
-    no_moving = True
-    d = ''
-    s = ''
+    """ Mobility """          
     plotap = {}
     plotsta = {}
+    plottxt = {}
+    nodesPlotted = []
+    plotGraph = False
     cancelPlot = False
+    ismobility = False
+    leastLoadFirst = False
+    DRAW = False
     MAX_X = 50
     MAX_Y = 50
-    DRAW = False
     
     @classmethod 
     def closePlot(self):
@@ -478,7 +521,7 @@ class mobility ( object ):
         return self.distance
     
     @classmethod   
-    def move(self, node, diffTime, speed, startposition, endposition):      
+    def move(self, sta, diffTime, speed, startposition, endposition):      
         """
             Moving nodes
             diffTime: important to calculate the speed  
@@ -487,8 +530,8 @@ class mobility ( object ):
         pos_y = float(endposition[1]) - float(startposition[1])
         pos_z = float(endposition[2]) - float(startposition[2])
         
-        self.nodePosition[node] = pos_x, pos_y, pos_z
-        self.speed[node] = ((pos_x + pos_y + pos_z)/diffTime) 
+        sta.position = pos_x, pos_y, pos_z
+        sta.speed = ((pos_x + pos_y + pos_z)/diffTime) 
         
         pos = '%.5f,%.5f,%.5f' % (pos_x/diffTime, pos_y/diffTime, pos_z/diffTime)
         pos = pos.split(',')
@@ -496,93 +539,65 @@ class mobility ( object ):
     
     @classmethod 
     def plot(self, src, dst, pos_src, pos_dst):
+        """
+            Plot Graph: Useful when the position is previously defined.
+                        Not useful for Mobility Models
+        """
         MAX_X = self.MAX_X
         MAX_Y = self.MAX_Y
         
         plt.ion()
         ax = plt.subplot(111)
         
-        if self.no_moving:  
-            if 'ap' in str(dst) and str(dst) not in self.nodesPlotted:
-                self.plotap[str(dst)], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
-                ax.add_patch(
-                    patches.Circle((pos_dst[0], pos_dst[1]),
-                    self.range(accessPoint.apMode[str(dst)]), fill=True,  alpha=0.1
-                    )
-                )
-                self.plotap[str(dst)].set_data(pos_dst[0],pos_dst[1])
-                self.nodesPlotted.append(str(dst))
-                plt.text(int(pos_dst[0]), int(pos_dst[1]), str(dst))
-                
-            elif 'ap' in str(src) and str(src) not in self.nodesPlotted:
-                self.plotap[str(src)], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
-                ax.add_patch(
-                    patches.Circle((pos_src[0], pos_src[1]),
-                    self.range(accessPoint.apMode[str(src)]), fill=True,  alpha=0.1
-                    )
-                )
-                self.plotap[str(src)].set_data(pos_src[0],pos_src[1])
-                self.nodesPlotted.append(str(src))
-                plt.text(int(pos_src[0]), int(pos_src[1]), str(src)) 
-                
-            if 'sta' in str(dst) and str(dst) not in self.nodesPlotted:
-                self.plotsta[str(dst)], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
-                self.nodesPlotted.append(str(dst))
-                self.plotsta[str(dst)].set_data(pos_dst[0],pos_dst[1])
-                plt.text(int(pos_dst[0]), int(pos_dst[1]), str(dst))
+        if 'sta' in str(dst) and str(dst) not in self.nodesPlotted:
+            node = str(dst)
+            self.plottxt[node] = ax.annotate(node, xy=(pos_dst[0],pos_dst[1]))
+            self.plotsta[node], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
+            self.nodesPlotted.append(node)
+            self.plotsta[node].set_data(pos_dst[0],pos_dst[1])
+        elif 'sta' in str(src) and str(src) not in self.nodesPlotted:
+            node = str(src)
+            self.plottxt[node] = ax.annotate(node, xy=(pos_src[0],pos_src[1]))
+            self.plotsta[node], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
+            self.nodesPlotted.append(node)
+            self.plotsta[node].set_data(pos_src[0],pos_src[1])
+        
+        if 'sta' in str(src):
+            self.plotsta[str(src)].set_data(pos_src[0],pos_src[1])
+            self.plottxt[str(src)].xytext = (pos_src[0],pos_src[1])
+        elif 'sta' in str(dst):
+            self.plotsta[str(dst)].set_data(pos_dst[0],pos_dst[1])
+            self.plottxt[str(dst)].xytext = (pos_dst[0],pos_dst[1])
+        
+        if 'ap' in str(dst) and str(dst) not in self.nodesPlotted:
+            ap = dst
+            pos_0 = pos_dst[0]
+            pos_1 = pos_dst[1]
+        elif 'ap' in str(src) and str(src) not in self.nodesPlotted:
+            ap = src
+            pos_0 = pos_src[0]
+            pos_1 = pos_src[1]
             
-            if 'sta' in str(src) and str(src) not in self.nodesPlotted:
-                self.plotsta[str(src)], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
-                self.nodesPlotted.append(str(src))
-                self.plotsta[str(src)].set_data(pos_src[0],pos_src[1])
-                plt.text(int(pos_src[0]), int(pos_src[1]), str(src)) 
-            plt.title("Mininet-WiFi Graph")
-            plt.show()
-        else:
-            if 'sta' in str(src) and str(src) not in self.nodesPlotted:
-                self.plotsta[str(src)], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
-                self.nodesPlotted.append(str(src))
-            if 'sta' in str(dst) and str(dst) not in self.nodesPlotted:
-                self.plotsta[str(dst)], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
-                self.nodesPlotted.append(str(dst))
+        if 'ap' in str(src) and str(src) not in self.nodesPlotted or 'ap' in str(dst) and str(dst) not in self.nodesPlotted:
+            self.plotap[ap], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='red')
             
-            if 'ao' in str(dst) and str(dst) not in self.nodesPlotted:
-                self.plotap[str(dst)], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
-                
-                ax.add_patch(
-                    patches.Circle((pos_dst[0], pos_dst[1]),
-                    self.range(accessPoint.apMode[str(dst)]), fill=True,  alpha=0.1
-                    )
+            ax.add_patch(
+                patches.Circle((pos_0, pos_1),
+                self.range(ap.mode), fill=True,  alpha=0.1
                 )
-                self.plotap[str(dst)].set_data(pos_dst[0],pos_dst[1])
-                self.nodesPlotted.append(str(dst))
-                plt.text(int(pos_dst[0]), int(pos_dst[1]), str(dst))
-                 
-            elif 'ap' in str(src) and str(src) not in self.nodesPlotted:
-                self.plotap[str(src)], = ax.plot(range(MAX_X), range(MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
-                ax.add_patch(
-                    patches.Circle((pos_src[0], pos_src[1]),
-                    self.range(accessPoint.apMode[str(src)]), fill=True,  alpha=0.1
-                    )
-                )
-                self.plotap[str(src)].set_data(pos_src[0],pos_src[1])
-                self.nodesPlotted.append(str(src))
-                plt.text(int(pos_src[0]), int(pos_src[1]), str(src)) 
-                
-            if 'ap' in str(src):
-                self.plotsta[str(src)].set_data(pos_src[0],pos_src[1])
-            if 'ap' in str(dst):
-                self.plotsta[str(dst)].set_data(pos_dst[0],pos_dst[1])
-            plt.title("Mininet-WiFi Graph")
-            plt.draw()            
+            )
+            self.plotap[ap].set_data(pos_0, pos_1)
+            self.nodesPlotted.append(str(ap))
+            plt.text(int(pos_0), int(pos_1), ap)
+        
+        plt.title("Mininet-WiFi Graph")
+        plt.draw()            
         
     @classmethod 
     def getDistance(self, src, dst):
-        """
-            Get the distance between two points  
-        """
-        pos_src = self.nodePosition[str(src)]
-        pos_dst = self.nodePosition[str(dst)]
+        """ Get the distance between two points """
+        pos_src = src.position
+        pos_dst = dst.position
         if self.plotGraph and self.cancelPlot==False:
             self.plot(src, dst, pos_src, pos_dst)
         points = np.array([(pos_src[0], pos_src[1], pos_src[2]), (pos_dst[0], pos_dst[1], pos_dst[2])])
@@ -591,9 +606,7 @@ class mobility ( object ):
     
     @classmethod 
     def printDistance(self, src, dst):
-        """
-            Print the distance between two points
-        """
+        """ Print the distance between two points """
         self.src = src
         self.dst = dst
         
@@ -602,34 +615,42 @@ class mobility ( object ):
     
     @classmethod   
     def printPosition(self, node):
-        """
-            Print position of STAs and APs  
-        """
-        self.node = str(node)
-        
-        self.pos_x = self.nodePosition[self.node][0]
-        self.pos_y = self.nodePosition[self.node][1]
-        self.pos_z = self.nodePosition[self.node][2]   
-        print "----------------\nPosition of %s\n----------------\nPosition X: %.2f\nPosition Y: %.2f\nPosition Z: %.2f\n" % (self.node, float(self.pos_x), float(self.pos_y), float(self.pos_z))
+        """ Print position of STAs and APs """
+        self.pos_x = node.position[0]
+        self.pos_y = node.position[1]
+        self.pos_z = node.position[2]   
+        print "----------------\nPosition of %s\n---------------- \
+        \nPosition X: %.2f \
+        \nPosition Y: %.2f \
+        \nPosition Z: %.2f\n" % (str(node), float(self.pos_x), float(self.pos_y), float(self.pos_z))
         
     @classmethod   
-    def handover(self, host):
-        src = str(host)
-        disassociate = True
-        for ap in accessPoint.apName:
-            dst = str(ap)
-            distance = float(self.getDistance(src, dst))
-            if distance < self.range(accessPoint.apMode[dst]):
-                host.pexec("iw dev %s-wlan0 connect %s" % (src, accessPoint.apSSID[dst]))
-                disassociate = False
-            if disassociate:
-                host.pexec("iw dev %s-wlan0 disconnect" % (host))
+    def handover(self, sta, ap, wlan, distance, changeAP, reason=None, **params):
+        if distance < self.range(ap.mode): 
+            if reason == 'llf' or reason == 'ssf':
+                sta.pexec("iw dev %s-wlan%s disconnect" % (sta, wlan))
+                sta.pexec("iw dev %s-wlan%s connect %s" % (sta, wlan, ap.ssid))
+                sta.ifaceAssociatedToAp[wlan] = str(ap)
+            elif str(ap) not in sta.ifaceAssociatedToAp:
+                #Useful for stations with more than one wifi iface
+                if 'ap' not in sta.ifaceAssociatedToAp[wlan]:
+                    sta.pexec("iw dev %s-wlan%s connect %s" % (sta, wlan, ap.ssid))
+                    sta.ifaceAssociatedToAp[wlan] = str(ap)   
+        elif distance > self.range(ap.mode):
+            if str(ap) == sta.ifaceAssociatedToAp[wlan]:
+                sta.pexec("iw dev %s-wlan%s disconnect" % (sta, wlan))       
+                sta.ifaceAssociatedToAp[wlan] = 'NoAssociated'  
             
     @classmethod   
-    def models(self, wifiNodes, associatedAP, startPosition, stationName, modelName,
-               max_x, max_y, min_v, max_v):
+    def models(self, wifiNodes=None, model=None, max_x=None, max_y=None, min_v=None, max_v=None, 
+               manual_aprange=-10, n_staMov=None, ismobility=None, llf=False, seed=None,
+               **mobilityparam):
         
-        self.modelName = modelName
+        accessPoint.manual_apRange = manual_aprange
+        self.modelName = model
+        self.ismobility = ismobility
+        self.leastLoadFirst = llf
+        np.random.seed(seed)
         
         # set this to true if you want to plot node positions
         self.DRAW = self.plotGraph
@@ -637,7 +658,7 @@ class mobility ( object ):
         self.cancelPlot = True
         
         # number of nodes
-        nr_nodes = stationName
+        nr_nodes = n_staMov
         
         # simulation area (units)
         MAX_X, MAX_Y = max_x, max_y
@@ -651,10 +672,18 @@ class mobility ( object ):
         if self.DRAW:
             plt.ion()
             ax = plt.subplot(111)
-            line, = ax.plot(range(MAX_X), range(MAX_X), linestyle='', marker='.', ms=12, mfc='blue')
-                
-        np.random.seed(0xffff)
-        
+            line, = ax.plot(range(mobility.MAX_X), range(mobility.MAX_X), linestyle='', marker='.', ms=10, mfc='blue')
+            self.plottxt = {}
+            
+            for node in wifiNodes:
+                if 'sta' in str(node) and str(node) not in station.fixedPosition:
+                    self.plottxt[str(node)] = ax.annotate(str(node), xy=(0, 0))
+                    
+                if str(node) in station.fixedPosition:
+                    self.plottxt[node] = ax.annotate(node, xy=(node.position[0], node.position[1]))
+                    self.plotsta[node], = ax.plot(range(mobility.MAX_X), range(mobility.MAX_Y), linestyle='', marker='.', ms=12, mfc='blue')
+                    self.plotsta[node].set_data(node.position[0], node.position[1])
+                               
         if(self.modelName=='RandomWalk'):
             ## Random Walk model
             mob = random_walk(nr_nodes, dimensions=(MAX_X, MAX_Y))
@@ -663,8 +692,8 @@ class mobility ( object ):
             mob = truncated_levy_walk(nr_nodes, dimensions=(MAX_X, MAX_Y))
         elif(self.modelName=='RandomDirection'):
             ## Random Direction model
-            mob = random_direction(nr_nodes, dimensions=(MAX_X, MAX_Y))
-        elif(self.modelName=='RandomWaypoint'):
+            mob = random_direction(nr_nodes, dimensions=(MAX_X, MAX_Y), velocity=(MIN_V, MAX_V))
+        elif(self.modelName=='RandomWayPoint'):
             ## Random Waypoint model
             mob = random_waypoint(nr_nodes, dimensions=(MAX_X, MAX_Y), velocity=(MIN_V, MAX_V), wt_max=MAX_WT)
         elif(self.modelName=='GaussMarkov'):
@@ -684,76 +713,68 @@ class mobility ( object ):
         #tvcm = tvc(groups, dimensions=(MAX_X, MAX_Y), aggregation=[0.5,0.], epoch=[100,100])
         oneTime = []
                 
-        if modelName!='':
+        if model!='':
             try:
                 for xy in mob:
                     if self.DRAW:
                         line.set_data(xy[:,0],xy[:,1])
-                        for n in range (0,len(wifiNodes)):
-                            self.position = []
-                            if 'ap' in str(wifiNodes[n]) and str(wifiNodes[n]) not in oneTime:
-                                self.position.append(startPosition[str(wifiNodes[n])][0])
-                                self.position.append(startPosition[str(wifiNodes[n])][1])
-                                self.position.append(0)
-                                self.nodePosition[str(wifiNodes[n])] = self.position
-                                plt.plot([startPosition[str(wifiNodes[n])][0]], [startPosition[str(wifiNodes[n])][1]], 'ro')
-                                plt.text(int(startPosition[str(wifiNodes[n])][0]), int(startPosition[str(wifiNodes[n])][1]), str(wifiNodes[n]))
+                    for n in range (0,len(wifiNodes)):
+                        wifiNode = str(wifiNodes[n])
+                        ap = wifiNodes[n]
+                        sta = wifiNodes[n]
+                        if 'ap' in wifiNode and wifiNode not in oneTime:
+                            pos_zero = ap.startPosition[0]
+                            pos_one = ap.startPosition[1]
+                            ap.position = pos_zero, pos_one, 0     
+                            if self.DRAW:
+                                plt.plot([pos_zero], [pos_one], 'ro')
+                                plt.text(int(pos_zero), int(pos_one), wifiNode)
                                 ax.add_patch(
-                                    patches.Circle((startPosition[str(wifiNodes[n])][0], startPosition[str(wifiNodes[n])][1]),
-                                    self.range(accessPoint.apMode[str(str(wifiNodes[n]))]), fill=True,  alpha=0.1
+                                    patches.Circle((pos_zero, pos_one),
+                                    self.range(ap.mode), fill=True,  alpha=0.1
                                     )
                                 )
-                                oneTime.append(str(wifiNodes[n]))
-                            elif 'ap' not in str(wifiNodes[n]):
-                                self.position.append(xy[n][0])
-                                self.position.append(xy[n][1])
-                                self.position.append(0)
-                                self.nodePosition[str(wifiNodes[n])] = self.position
-                                distance = self.getDistance(src = str(wifiNodes[n]), dst = associatedAP[str(wifiNodes[n])])
-                                association.setInfraParameters(wifiNodes[n], station.staMode[str(wifiNodes[n])], distance)
+                            oneTime.append(str(wifiNodes[n]))
+                        elif 'ap' not in str(wifiNodes[n]):
+                            if wifiNode not in station.fixedPosition:
+                                pos_zero = xy[n][0]
+                                pos_one = xy[n][1]
+                                if self.DRAW:
+                                    self.plottxt[wifiNode].xytext = (pos_zero, pos_one)
+                                sta.position = pos_zero, pos_one, 0
+                                for ap in accessPoint.list:
+                                    distance = self.getDistance(sta, ap)
+                                    association.setInfraParameters(sta, ap, distance, '')
+                    if self.DRAW:
                         plt.title("Mininet-WiFi Graph")
                         plt.draw()
-                    else:
-                        for n in range (0,len(wifiNodes)):
-                            self.position = []
-                            if 'ap' in str(wifiNodes[n]) and str(wifiNodes[n]) not in oneTime:
-                                self.position.append(startPosition[str(wifiNodes[n])][0])
-                                self.position.append(startPosition[str(wifiNodes[n])][1])
-                                self.position.append(0)
-                                self.nodePosition[str(wifiNodes[n])] = self.position
-                                oneTime.append(str(wifiNodes[n]))
-                            if 'ap' not in str(wifiNodes[n]):
-                                self.position.append(xy[n][0])
-                                self.position.append(xy[n][1])
-                                self.position.append(0)
-                                self.nodePosition[str(wifiNodes[n])] = self.position
-                                distance = self.getDistance(src = str(wifiNodes[n]), dst = associatedAP[str(wifiNodes[n])])
-                                association.setInfraParameters(wifiNodes[n], station.staMode[str(wifiNodes[n])], distance)
             except:
                 print "Graph Stopped!"  
-    
-    
+        
 class wifiParameters ( object ):
     """
         WiFi Parameters 
     """
-    freq = {}
-    txpower = {}
     
     @classmethod
-    def frequency(self, sta, iface): 
-        """
-            Get frequency info **in development**
-        """
-        self.freq[str(sta)] = sta.cmd('iwconfig %s | grep -o \'Frequency.*z\' | cut -f2- -d\':\''% iface) 
+    def get_rsi(self, sta, iface): 
+        """ Get rsi info """
+        sta.rsi = (sta.cmd('iwconfig %s | grep -o \'Signal.*\' | cut -f2- -d\'=\' | cut -c1-4'
+                                            % iface)) 
     
     @classmethod
-    def tx_power(self, sta, iface): 
-        """
-            Get tx_power info **in development**
-        """
-        self.txpower[str(sta)] = sta.cmd('iwconfig %s | grep -o \'Tx-Power.*\' | cut -f2- -d\'=\''% iface)
+    def get_frequency(self, sta, iface): 
+        """ Get frequency info **in development """
+        freq = sta.cmd('iwconfig %s | grep -o \'Frequency.*z\' | cut -f2- -d\':\' | cut -c1-5'
+                                            % iface)
+        if freq!='':
+            sta.frequency = float(freq) 
     
+    @classmethod
+    def get_tx_power(self, sta, iface): 
+        """ Get tx_power info """
+        sta.txpower = int(sta.cmd('iwconfig %s | grep -o \'Tx-Power.*\' | cut -f2- -d\'=\' | cut -c1-3'
+                                         % iface))
     #@classmethod
     #def printNoiseInfo(self, host): 
     #    """
@@ -763,34 +784,153 @@ class wifiParameters ( object ):
     
     @classmethod
     def latency(self, distance):        
-        latency = 5 + distance
+        latency = 2 + distance
         return latency
         
     @classmethod
-    def loss(self, distance):        
-        loss = 0.01 + distance/10
-        return loss
+    def loss(self, distance, mode):  
+        if distance!=0:
+            loss =  0.1 * distance
+        else:
+            loss = 0.1
+        return loss/10
     
     @classmethod
     def delay(self, distance, seconds):
         """"Based on RandomPropagationDelayModel (ns3)"""
+        if seconds == 0:
+            seconds = 1
         delay = distance/seconds
-        return delay
-        
+        return delay        
+    
+    @classmethod
+    def custom_step(self, mode):    
+        """ only useful for bw """
+        self.step = 0
+        if (mode=='a' or mode=='g'):
+            self.step = 3
+        elif(mode=='b'):
+            self.step = 5
+        elif(mode=='n'):
+            self.step = 5
+        elif(mode=='ac'):
+            self.step = 5
+            
+        return self.step
+    
+    @classmethod
+    def custom_bw_step(self, mode):    
+        """ only useful for bw """
+        self.bw_step = 0
+        if (mode=='a' or mode=='g'):
+            self.bw_step = 5
+        elif(mode=='b'):
+            self.bw_step = 1.1
+        elif(mode=='n'):
+            self.bw_step = 42
+        elif(mode=='ac'):
+            self.bw_step = 338
+            
+        return self.bw_step
+    
     @classmethod
     def bw(self, distance, mode):
-        bw = self.set_bw(mode) - distance/10    
-        return bw
+       
+        signalRange = self.get_range(mode)
+        customStep = self.custom_step(mode)
+        custombwStep = self.custom_bw_step(mode)
+        if distance != 0: 
+            bw = self.set_bw(mode)
+            for n in range(0,signalRange+1):
+                if n % customStep==0:
+                    if n>=distance:
+                        return bw
+                    elif distance > signalRange:
+                        return self.set_bw(mode)
+                    bw = bw - custombwStep                    
+        else:
+            return self.set_bw(mode)        
+
+    @classmethod
+    def max_pathLoss(self, sta):
+        """used to calculate the range."""  
+        gains = 6
+        losses = 6
+        fademargin = 12
+        maxpathloss = sta.txpower - sta.rsi + gains - losses - fademargin
+        return maxpathloss
+        
+    @classmethod
+    def friis_propagation_loss_model(self):   
+        """
+            power_r = Reception Power (W)
+            power_t = Transmission Power (W)
+            gain_r = Reception gain (unit-less)
+            gain_t = Transmission gain (unit-less)
+            wavelength = wavelength (m) => C/f => (m/s and Hz)
+            distance = (m)
+            systemLoss = system loss (unit-less)
+        """
+        frequency = 2412
+        power_t = 20
+        gain_r = 6
+        gain_t = 6
+        systemLoss = 1.
+        wavelength = 299792458/frequency
+        power_r = (power_t * gain_t * gain_r * math.pow(wavelength,2)) / \
+                        math.pow((4 * math.pi * distance),2) * systemLoss
+        return power_r
+        
+    @classmethod
+    def pathLoss(self, exponent):
+        """(pathloss) is the path loss in decibels
+        (exponent) is the path loss exponent
+        (distance) is the distance between the transmitter and the receiver (meters)
+        and (constant) is a constant which accounts for system losses."""    
+        #pathloss = 10 * exponent * math.log10(distance) + constant
     
-    #@classmethod
-    #def pathLoss(self):
-    #    pass
+    @classmethod
+    def free_space_loss(self, sta):
+        """Formula: Free Space Loss
+        (distance) is the distance between the transmitter and the receiver (km)
+        (frequency) signal frequency transmited(MegaHertz)."""  
+        frequency = sta.frequency
+        distance=10
+        #32,44 is a constant and its value depends on the units for distance and frequency
+        fsl = 32,44 - 20 * math.log10(distance) + 20 * math.log10(frequency) #fsl in dB
+        return float('%.1f' % fsl)
+    
+    @classmethod
+    def free_space_path_loss(self, sta):
+        """Formula: Free Space Path Loss
+        (distance) is the distance between the transmitter and the receiver (meters)
+        (frequency) signal frequency transmited(Hertz)
+        (constant) speed of light in a vacuum (metres per second)."""  
+        constant = 3 * 10**8  
+        frequency = sta.frequency * 10**9 # Using 10^9 to convert to Hz 
+        distance = 1
+        fspl = ((4 * math.pi * distance * frequency)/constant)**2
+        return fspl
+    
+    @classmethod    
+    def get_range(self, mode):
+        """ get Range (in meters) """
+        self.distance = 0
+        if (mode=='a' or mode=='g'):
+            self.distance = 33
+        elif(mode=='b'):
+            self.distance = 50
+        elif(mode=='n'):
+            self.distance = 70
+        elif(mode=='ac'):
+            self.distance = 100 
+        
+        self.distance = self.distance
+        return self.distance
     
     @classmethod    
     def set_bw(self, mode):
-        """
-            set the Bandwidth according Mode
-        """
+        """ set maximum Bandwidth according Mode """
         self.bandwidth = 0
         if (mode=='a'):
             self.bandwidth = 54

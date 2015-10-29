@@ -69,14 +69,14 @@ from mininet.moduledeps import moduleDeps, pathCheck, TUN
 from mininet.link import Link, Intf, TCIntf, OVSIntf
 from re import findall
 from distutils.version import StrictVersion
-from wifi import station, association, module, accessPoint
+from wifi import module, accessPoint
 
 class Node( object ):
     """A virtual network node is simply a shell in a network namespace.
        We communicate with it using pipes."""
     
     portBase = 0  # Nodes always start with eth0/port0, even in OF 1.0
-    
+    portWlanBase = 0
 
     def __init__( self, name, inNamespace=True, **params ):
         """name: name of node
@@ -96,7 +96,42 @@ class Node( object ):
 
         self.intfs = {}  # dict of port numbers to interfaces
         self.ports = {}  # dict of interfaces to port numbers
+        self.wlanports = {}  # dict of wlan interfaces to port numbers
         self.nameToIntf = {}  # dict of interface names to Intfs
+        
+        #BaseStations Parameters
+        self.nAssociatedStations = 0
+        
+        #Stations Parameters
+        self.associate = False
+        self.nWlans = 0
+        self.nextIface = 0
+        
+        # Station and BaseStation Parameters
+        self.ssid = ''
+        self.channel = ''
+        self.mode = ''
+        self.virtualWlan = ''
+        
+        # Station Parameters
+        self.associatedAp = ''
+        self.addressingSta = 0
+        self.bringUpIface = 0
+        self.ifaceToAssociate = -1
+        self.ifaceAssociatedToAp = []
+        self.rsi = 0
+        self.frequency = 0
+        self.txpower = 0
+        self.mac=''
+        
+        # Mobility Parameters
+        self.position = []
+        self.startPosition = []
+        self.endPosition = []
+        self.moveSta = []
+        self.startTime = 0
+        self.endTime = 0      
+        self.speed = 0  
 
         # Make pylint happy
         ( self.shell, self.execed, self.pid, self.stdin, self.stdout,
@@ -407,6 +442,12 @@ class Node( object ):
     # the real interfaces are created as veth pairs, so we can't
     # make a single interface at a time.
 
+    def newWlanPort( self ):
+        "Return the next port number to allocate."
+        if len( self.wlanports ) > 0:
+            return max( self.wlanports.values() ) + 1
+        return self.portWlanBase
+
     def newPort( self ):
         "Return the next port number to allocate."
         if len( self.ports ) > 0:
@@ -436,8 +477,9 @@ class Node( object ):
         if ports:
             return self.intfs[ min( ports ) ]
         else:
-            warn( '*** defaultIntf: warning:', self.name,
-                  'has no interfaces\n' )
+            if 'sta' not in self.name:
+                warn( '*** defaultIntf: warning:', self.name,
+                      'has no interfaces\n' )
 
     def intf( self, intf=None ):
         """Return our interface object with given string name,
@@ -576,15 +618,10 @@ class Node( object ):
         # the superclass config method here as follows:
         # r = Parent.config( **_params )
         r = {}
-        self.setParam( r, 'setMAC', mac=mac )
+        if 'sta' not in str(self):
+            self.setParam( r, 'setMAC', mac=mac )
         self.setParam( r, 'setIP', ip=ip )
         self.setParam( r, 'setDefaultRoute', defaultRoute=defaultRoute )
-        
-        #Necessary if the mac address has changed
-        host = str(self)
-        if(mac!=None and module.isWiFi==True and 'sta' in host and station.doAssociation[host] == True):
-            station.associate(self, association.ssid[station.associatedAP[str(host)]])
-            #self.cmd("iw dev %s-wlan0 connect %s" % (self, association.ssid[station.associatedAP[str(host)]]))
         
         # This should be examined
         self.cmd( 'ifconfig lo ' + lo )
@@ -1167,7 +1204,6 @@ class OVSSwitch( Switch ):
                          self.intfOpts( intf )
                          for intf in self.intfList() 
                          if self.ports[ intf ] and not intf.IP() )
-                
         # Command to create controller entries
         clist = [ ( self.name + c.name, '%s:%s:%d' %
                   ( c.protocol, c.IP(), c.port ) )
