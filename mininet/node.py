@@ -96,16 +96,12 @@ class Node( object ):
 
         self.intfs = {}  # dict of port numbers to interfaces
         self.ports = {}  # dict of interfaces to port numbers
-        self.wlanports = {}  # dict of wlan interfaces to port numbers
+        self.wlanports = -1  # dict of wlan interfaces to port numbers
         self.nameToIntf = {}  # dict of interface names to Intfs
         
         #BaseStations Parameters
         self.nAssociatedStations = 0
-        
-        #Stations Parameters
-        self.associate = False
-        self.nWlans = 0
-        self.nextIface = 0
+        self.range = 0
         
         # Station and BaseStation Parameters
         self.ssid = ''
@@ -114,6 +110,9 @@ class Node( object ):
         self.virtualWlan = ''
         
         # Station Parameters
+        self.associate = False
+        self.nWlans = 0
+        self.nextIface = 0
         self.associatedAp = ''
         self.addressingSta = 0
         self.bringUpIface = 0
@@ -123,7 +122,9 @@ class Node( object ):
         self.frequency = 0
         self.txpower = 0
         self.mac=''
-        
+
+        self.type = ''
+                
         # Mobility Parameters
         self.position = []
         self.startPosition = []
@@ -444,9 +445,9 @@ class Node( object ):
 
     def newWlanPort( self ):
         "Return the next port number to allocate."
-        if len( self.wlanports ) > 0:
-            return max( self.wlanports.values() ) + 1
-        return self.portWlanBase
+        self.wlanports += 1
+        wlan = self.wlanports 
+        return wlan
 
     def newPort( self ):
         "Return the next port number to allocate."
@@ -477,7 +478,7 @@ class Node( object ):
         if ports:
             return self.intfs[ min( ports ) ]
         else:
-            if 'sta' not in self.name:
+            if 'station' != self.type:
                 warn( '*** defaultIntf: warning:', self.name,
                       'has no interfaces\n' )
 
@@ -618,7 +619,7 @@ class Node( object ):
         # the superclass config method here as follows:
         # r = Parent.config( **_params )
         r = {}
-        if 'sta' not in str(self):
+        if 'station' != self.type:
             self.setParam( r, 'setMAC', mac=mac )
         self.setParam( r, 'setIP', ip=ip )
         self.setParam( r, 'setDefaultRoute', defaultRoute=defaultRoute )
@@ -1245,9 +1246,11 @@ class OVSSwitch( Switch ):
         self.newapif.sort(key=len, reverse=False)
         
         if(module.isCode==True):
-            if('ap' in self.name):
-                os.system("ovs-vsctl add-port %s %s" % (self.name, (self.newapif[accessPoint.number])))
-                accessPoint.number+=1
+            if('accessPoint' == self.type):
+                for iface in range(0, self.nWlans):
+                    port = str(self.name) + str('-wlan') + str(iface)
+                    os.system("ovs-vsctl add-port %s %s" % (self.name, port))
+                    accessPoint.number+=1
         
     # This should be ~ int( quietRun( 'getconf ARG_MAX' ) ),
     # but the real limit seems to be much lower
